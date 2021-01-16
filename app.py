@@ -64,6 +64,7 @@ def asingle_ohclv(exchange_id, symbol, since, timeframe):
     data = []
     limit = 100
     exchange = getattr(ccxt, exchange_id)({'enableRateLimit': True})
+    print(exchange.id)
     timeframe_duration_in_seconds = exchange.parse_timeframe(timeframe)
     timeframe_duration_in_ms = timeframe_duration_in_seconds * 1000
     from_timestamp = exchange.parse8601(since)
@@ -92,32 +93,33 @@ if __name__ == '__main__':
     timeframe = '1d'
     since='2020-01-01T00:00:00Z'
 
-    exchanges = ["kucoin", "bittrex", "bitfinex", "poloniex", "huobipro"]
+    exchanges = ["kucoin", "bittrex", "bitfinex", "poloniex", "huobipro", "binance", "coinbase"]
 
     tic = time.time()
     a = asyncio.get_event_loop().run_until_complete(multi_markets(exchanges))
 
     results = []
     while True:
-        list_quote = []
+        list_base = []
         list_exchange_symbol = []
         if len(list_exchange_symbol) >= len(exchanges):
             multi_ohlcv(list_exchange_symbol, since, timeframe)
             print('fetched 6 coins already')
             list_exchange_symbol = []
-            results += list_quote
-            list_quote = []
+            results += list_base
+            list_base = []
             print(results)
             print("async call spend:", time.time() - tic)
             tic = time.time()
         for ex in a:
             exchange_id = ex['exchange']
             for coin, coindata in ex['markets'].items():
-                if coindata['base'] == base and coindata['quote'] not in results:
-                    list_exchange_symbol.append({'id': exchange_id, 'symbol': coin})
-                    list_quote.append(coindata['quote'])
+                baseId = coindata['baseId'].upper()
+                quoteId = coindata['quoteId'].upper()
+                if quoteId == 'BTC' and baseId != 'BTC' and baseId not in results and baseId not in list_base:
+                    list_exchange_symbol.append({'id': exchange_id, 'symbol': coindata['id']})
+                    list_base.append(baseId)
+                    ex['markets'].pop(coin)
+                    print(f'{exchange_id}: popped {baseId}/{quoteId}')
                     break
-                else:
-                    print(coindata)
-                    print(f'skipping {coindata["quote"]} already in results')
-                    exit(0)
+
