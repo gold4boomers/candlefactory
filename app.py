@@ -1,8 +1,7 @@
-import os, asyncio, csv, time
+import asyncio, csv, time
 import ccxt
 import logging
-import itertools
-from collections import namedtuple
+
 # common constants
 
 msec = 1000
@@ -12,23 +11,13 @@ import ccxt.async_support as ccxta
 
 logging.basicConfig(level=logging.INFO)
 
-
-def sync_client(exchange_id):
-    markets = None
-    exchange = getattr(ccxt, exchange_id)({'enableRateLimit': True})
-    try:
-        markets = exchange.load_markets()
-    except Exception as e:
-        print(type(e).__name__, str(e))
-    return { 'exchange': exchange.id, 'markets': markets }
-
 async def async_client(exchange_id):
     markets = None
     exchange = getattr(ccxta, exchange_id)({'enableRateLimit': True})
     try:
         markets = await exchange.load_markets()
     except Exception as e:
-        print(type(e).__name__, str(e))
+        logging.info(type(e).__name__, str(e))
     await exchange.close()
     dict_i_want = { your_key: markets[your_key] for your_key in filter(lambda x: 'BTC' in x, markets)}
     return { 'exchange': exchange.id, 'markets': dict_i_want }
@@ -38,27 +27,6 @@ async def multi_markets(exchanges):
     markets = await asyncio.gather(*input_coroutines, return_exceptions=True)
     return markets
 
-def single_ohclv(exchange_id, symbol, quoteid, baseid, since, timeframe):
-    data = []
-    limit = 100
-    exchange = getattr(ccxt, exchange_id)({'enableRateLimit': True})
-    timeframe_duration_in_seconds = exchange.parse_timeframe(timeframe)
-    timeframe_duration_in_ms = timeframe_duration_in_seconds * 1000
-    from_timestamp = exchange.parse8601(since)
-    now = exchange.milliseconds()
-    while from_timestamp <= now:
-        try:
-            ohlcvs = exchange.fetch_ohlcv(symbol, timeframe, from_timestamp, limit=limit)
-            if len(ohlcvs) > 0:
-                first = ohlcvs[0][0]
-                last = ohlcvs[-1][0]
-                print('First candle epoch', first, exchange.iso8601(first))
-                print('Last candle epoch', last, exchange.iso8601(last))
-                from_timestamp = last + timeframe_duration_in_ms
-                data += ohlcvs
-        except (ccxt.ExchangeError, ccxt.AuthenticationError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout) as error:
-            print('Got an error', type(error).__name__, error.args, ', retrying in', hold, 'seconds...')
-            time.sleep(hold)
 
 async def asingle_ohclv(ex):
     symbol = ex['symbol']
@@ -69,7 +37,6 @@ async def asingle_ohclv(ex):
     exchange_id = ex['id']
 
     data = []
-    limit = 100
     filename = f'{quoteId}_{baseId}-{timeframe}-{exchange_id}.csv'
     exchange = getattr(ccxta, exchange_id)({'enableRateLimit': True})
 
@@ -81,16 +48,13 @@ async def asingle_ohclv(ex):
     while from_timestamp <= now:
         exchange = getattr(ccxta, exchange_id)({'enableRateLimit': True})
         try:
-            ohlcvs = await exchange.fetch_ohlcv(symbol, timeframe, from_timestamp, limit)
+            ohlcvs = await exchange.fetch_ohlcv(symbol, timeframe, from_timestamp)
             if len(ohlcvs) > 0:
-                first = ohlcvs[0][0]
-                last = ohlcvs[-1][0]
-                # print('First candle epoch', first, exchange.iso8601(first))
-                # print('Last candle epoch', last, exchange.iso8601(last))
-                from_timestamp = last + timeframe_duration_in_ms
+                first, last = ohlcvs[0][0], ohlcvs[-1][0]
+                from_timestamp += last + minute * 60 * 24 #fix this for non daily
                 data += ohlcvs
         except (ccxt.ExchangeError, ccxt.AuthenticationError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout) as error:
-            print('Got an error', type(error).__name__, error.args, ', retrying in', hold, 'seconds...')
+            logging.info('Got an error', type(error).__name__, error.args, ', retrying in', hold, 'seconds...')
             return
         finally:
             time.sleep(1)
@@ -106,11 +70,11 @@ async def multi_ohlcv(list_exchange_symbol):
     return markets
 
 if __name__ == '__main__':
-    base = 'BTC'
+    quote = ['BTC', 'USD']
     timeframe = '1d'
-    since='2020-01-01T00:00:00Z'
+    since='2016-01-01T00:00:00Z'
 
-    exchanges = ["binance", "kucoin", "poloniex", "hitbtc", "bittrex", "coinbase", "coinbaseprime", "coinbasepro", "huobipro", "okex"]
+    exchanges = ["binance", "kucoin", "poloniex", "okex","bitmex","hitbtc", "bittrex", "coinbase", "coinbaseprime", "coinbasepro", "huobipro", "okex"]
 
     tic = time.time()
     a = asyncio.get_event_loop().run_until_complete(multi_markets(exchanges))
@@ -128,13 +92,13 @@ if __name__ == '__main__':
             try:
                 exchange_id = ex['exchange']
             except:
-                print(ex)
+                logging.info(ex)
                 continue
             for coin, coindata in ex['markets'].items():
                 symbol = coindata['symbol']
                 baseId = coindata['baseId'].upper()
                 quoteId = coindata['quoteId'].upper()
-                if quoteId == 'BTC' and baseId != 'BTC' and baseId not in results and baseId not in list_base:
+                if f'{quoteId}_{baseId}' not in results and any(x in quoteId for x in quote):
                     list_exchange_symbol.append({'id': exchange_id, 
                     'symbol': symbol, 
                     'quoteId': quoteId, 
@@ -148,17 +112,13 @@ if __name__ == '__main__':
         for res in b:
             if res == None:
                 continue
-            if not 'filename' in res.keys():
-                print('no fname')
+            try:
+                filename = res['filename']
+                data = res['data']
+            except:
                 continue
-            if not 'data' in res.keys():
-                print('no data')
-                continue
-            filename = res['filename']
-            data = res['data']
             with open(f'out/{res["filename"]}', mode='w') as output_file:
                 csv_writer = csv.writer(output_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
                 csv_writer.writerows(res["data"])
-            list_base.append(res['base'])
+            list_base.append(f"{quote}_{res['base']}")
         results += list_base
-    print("async call spend:", time.time() - tic)
