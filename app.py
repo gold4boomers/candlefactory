@@ -60,11 +60,11 @@ def single_ohclv(exchange_id, symbol, since, timeframe):
             print('Got an error', type(error).__name__, error.args, ', retrying in', hold, 'seconds...')
             time.sleep(hold)
 
-def asingle_ohclv(exchange_id, symbol, since, timeframe):
+def asingle_ohclv(exchange_id, symbol, quoteId, baseId, since, timeframe):
     data = []
     limit = 100
     exchange = getattr(ccxt, exchange_id)({'enableRateLimit': True})
-    print(exchange.id)
+    filename = f'{quoteId}_{baseId}-{timeframe}-{exchange_id}.csv'
     timeframe_duration_in_seconds = exchange.parse_timeframe(timeframe)
     timeframe_duration_in_ms = timeframe_duration_in_seconds * 1000
     from_timestamp = exchange.parse8601(since)
@@ -75,16 +75,20 @@ def asingle_ohclv(exchange_id, symbol, since, timeframe):
             if len(ohlcvs) > 0:
                 first = ohlcvs[0][0]
                 last = ohlcvs[-1][0]
-                print('First candle epoch', first, exchange.iso8601(first))
-                print('Last candle epoch', last, exchange.iso8601(last))
+                # print('First candle epoch', first, exchange.iso8601(first))
+                # print('Last candle epoch', last, exchange.iso8601(last))
                 from_timestamp = last + timeframe_duration_in_ms
                 data += ohlcvs
         except (ccxt.ExchangeError, ccxt.AuthenticationError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout) as error:
             print('Got an error', type(error).__name__, error.args, ', retrying in', hold, 'seconds...')
             time.sleep(hold)
+    with open(f'out/{filename}', mode='w') as output_file:
+        csv_writer = csv.writer(output_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        csv_writer.writerows(data)
+    return True
 
 async def multi_ohlcv(list_exchange_symbol, since, timeframe):
-    input_coroutines = [asingle_ohclv(k['id'], k['symbol'], since, timeframe) for k in list_exchange_symbol]
+    input_coroutines = [asingle_ohclv(k['id'], k['symbol'], k['quoteId'], k['baseId'], since, timeframe) for k in list_exchange_symbol]
     markets = await asyncio.gather(*input_coroutines, return_exceptions=True)
     return markets
 
@@ -93,33 +97,36 @@ if __name__ == '__main__':
     timeframe = '1d'
     since='2020-01-01T00:00:00Z'
 
-    exchanges = ["kucoin", "bittrex", "bitfinex", "poloniex", "huobipro", "binance", "coinbase"]
+    exchanges = ["kucoin", "bittrex", "bitfinex", "poloniex","huobi","coinbasepro","okcoinusd", "huobipro", "binance", "coinbase"]
 
     tic = time.time()
     a = asyncio.get_event_loop().run_until_complete(multi_markets(exchanges))
 
     results = []
+    i = 0
     while True:
+        i+=1
         list_base = []
         list_exchange_symbol = []
-        if len(list_exchange_symbol) >= len(exchanges):
-            multi_ohlcv(list_exchange_symbol, since, timeframe)
-            print('fetched 6 coins already')
-            list_exchange_symbol = []
-            results += list_base
-            list_base = []
-            print(results)
-            print("async call spend:", time.time() - tic)
-            tic = time.time()
+
+        tic = time.time()
         for ex in a:
             exchange_id = ex['exchange']
             for coin, coindata in ex['markets'].items():
                 baseId = coindata['baseId'].upper()
                 quoteId = coindata['quoteId'].upper()
                 if quoteId == 'BTC' and baseId != 'BTC' and baseId not in results and baseId not in list_base:
-                    list_exchange_symbol.append({'id': exchange_id, 'symbol': coindata['id']})
+                    list_exchange_symbol.append({'id': exchange_id, 'symbol': coindata['id'], 'quote': quoteId, 'base': baseId})
                     list_base.append(baseId)
                     ex['markets'].pop(coin)
-                    print(f'{exchange_id}: popped {baseId}/{quoteId}')
                     break
+        
+        multi_ohlcv(list_exchange_symbol, since, timeframe)
+        list_exchange_symbol = []
+        results += list_base
+        print(results)
+        if i >= 10:
+            break
+
+    print("async call spend:", time.time() - tic)
 
